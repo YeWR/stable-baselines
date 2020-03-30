@@ -299,7 +299,7 @@ class PPO2(ActorCriticRLModel):
 
         return policy_loss, value_loss, policy_entropy, approxkl, clipfrac
 
-    def learn(self, total_timesteps, callback=None, log_interval=1, tb_log_name="PPO2",
+    def learn(self, total_timesteps, callback=None, log_interval=1, save_interval=0, tb_log_name="PPO2",
               reset_num_timesteps=True):
         # Transform to callable if needed
         self.learning_rate = get_schedule_fn(self.learning_rate)
@@ -335,7 +335,7 @@ class PPO2(ActorCriticRLModel):
                 # true_reward is the reward without discount
                 rollout = self.runner.run(callback)
                 # Unpack
-                obs, returns, masks, actions, values, neglogpacs, states, ep_infos, true_reward = rollout
+                obs, returns, masks, actions, values, neglogpacs, states, ep_infos, true_reward, extra_infos = rollout
 
                 callback.on_rollout_end()
 
@@ -388,10 +388,20 @@ class PPO2(ActorCriticRLModel):
                                                 masks.reshape((self.n_envs, self.n_steps)),
                                                 writer, self.num_timesteps)
 
-                if self.verbose >= 1 and (update % log_interval == 0 or update == 1):
+                try:
+                    from mpi4py import MPI
+                except ImportError:
+                    MPI = None
+                is_mpi_root = (MPI is None or MPI.COMM_WORLD.Get_rank() == 0)
+                print('*****mpi*********', MPI.COMM_WORLD.Get_rank())
+                if is_mpi_root and self.verbose >= 1 and (update % log_interval == 0 or update == 1):
                     explained_var = explained_variance(values, returns)
                     logger.logkv("serial_timesteps", update * self.n_steps)
                     logger.logkv("n_updates", update)
+                    logger.logkv("reward", true_reward.mean())
+                    for key, value in extra_infos.items():
+                        logger.logkv(key, value.mean())
+
                     logger.logkv("total_timesteps", self.num_timesteps)
                     logger.logkv("fps", fps)
                     logger.logkv("explained_variance", float(explained_var))
@@ -402,6 +412,15 @@ class PPO2(ActorCriticRLModel):
                     for (loss_val, loss_name) in zip(loss_vals, self.loss_names):
                         logger.logkv(loss_name, loss_val)
                     logger.dumpkvs()
+
+                if save_interval and (update % save_interval == 0 or update == 1) and logger.get_dir() and is_mpi_root:
+                    import os
+                    checkdir = os.path.join(logger.get_dir(), 'checkpoints')
+                    os.makedirs(checkdir, exist_ok=True)
+                    savepath = os.path.join(checkdir, '%.5i'%update)
+                    print('Saving to', savepath)
+                    self.save(savepath)
+
 
             callback.on_training_end()
             return self
@@ -468,6 +487,12 @@ class Runner(AbstractEnvRunner):
         mb_obs, mb_rewards, mb_actions, mb_values, mb_dones, mb_neglogpacs = [], [], [], [], [], []
         mb_states = self.states
         ep_infos = []
+        extra_infos = {
+            'num_steps': [],
+            'num_steps_succ': [],
+            'num_steps_fail': [],
+            'succ': []
+        }
         for _ in range(self.n_steps):
             actions, values, self.states, neglogpacs = self.model.step(self.obs, self.states, self.dones)
             mb_obs.append(self.obs.copy())
@@ -494,6 +519,14 @@ class Runner(AbstractEnvRunner):
                 maybe_ep_info = info.get('episode')
                 if maybe_ep_info is not None:
                     ep_infos.append(maybe_ep_info)
+
+            ## num steps
+            for info in infos:
+                for key in extra_infos.keys():
+                    val = info.get(key)
+                    if val is not None:
+                        extra_infos[key].append(info[key])
+
             mb_rewards.append(rewards)
         # batch of steps to batch of rollouts
         mb_obs = np.asarray(mb_obs, dtype=self.obs.dtype)
@@ -503,6 +536,9 @@ class Runner(AbstractEnvRunner):
         mb_neglogpacs = np.asarray(mb_neglogpacs, dtype=np.float32)
         mb_dones = np.asarray(mb_dones, dtype=np.bool)
         last_values = self.model.value(self.obs, self.states, self.dones)
+
+        for key, info in extra_infos.items():
+            extra_infos[key] = np.asarray(info)
         # discount/bootstrap off value fn
         mb_advs = np.zeros_like(mb_rewards)
         true_reward = np.copy(mb_rewards)
@@ -521,7 +557,7 @@ class Runner(AbstractEnvRunner):
         mb_obs, mb_returns, mb_dones, mb_actions, mb_values, mb_neglogpacs, true_reward = \
             map(swap_and_flatten, (mb_obs, mb_returns, mb_dones, mb_actions, mb_values, mb_neglogpacs, true_reward))
 
-        return mb_obs, mb_returns, mb_dones, mb_actions, mb_values, mb_neglogpacs, mb_states, ep_infos, true_reward
+        return mb_obs, mb_returns, mb_dones, mb_actions, mb_values, mb_neglogpacs, mb_states, ep_infos, true_reward, extra_infos
 
 
 # obs, returns, masks, actions, values, neglogpacs, states = runner.run()

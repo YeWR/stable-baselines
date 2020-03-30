@@ -43,9 +43,7 @@ def make_vec_env(env_id, n_envs=1, seed=None, start_index=0,
     def make_env(rank):
         def _init():
             if isinstance(env_id, str):
-                env = gym.make(env_id)
-                if len(env_kwargs) > 0:
-                    warnings.warn("No environment class was passed (only an env ID) so `env_kwargs` will be ignored")
+                env = gym.make(env_id, **env_kwargs)
             else:
                 env = env_id(**env_kwargs)
             if seed is not None:
@@ -68,6 +66,9 @@ def make_vec_env(env_id, n_envs=1, seed=None, start_index=0,
     if vec_env_cls is None:
         # Default: use a DummyVecEnv
         vec_env_cls = DummyVecEnv
+
+    if n_envs > 1:
+        vec_env_cls = SubprocVecEnv
 
     return vec_env_cls([make_env(i + start_index) for i in range(n_envs)], **vec_env_kwargs)
 
