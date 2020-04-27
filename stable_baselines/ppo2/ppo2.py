@@ -488,6 +488,7 @@ class Runner(AbstractEnvRunner):
         mb_states = self.states
         ep_infos = []
         extra_infos = {
+            'stack_len': [],
             'total_reward': [],
             'num_steps': [],
             'num_steps_succ': [],
