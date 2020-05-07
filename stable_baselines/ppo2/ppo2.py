@@ -493,7 +493,8 @@ class Runner(AbstractEnvRunner):
             'num_steps': [],
             'num_steps_succ': [],
             'num_steps_fail': [],
-            'succ': []
+            'succ': [],
+            'success_objs': [],
         }
         for _ in range(self.n_steps):
             actions, values, self.states, neglogpacs = self.model.step(self.obs, self.states, self.dones)
