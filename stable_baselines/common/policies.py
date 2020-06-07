@@ -13,6 +13,24 @@ from stable_baselines.common.distributions import make_proba_dist_type, Categori
 from stable_baselines.common.input import observation_input
 
 
+def cnn_typeVector(concat_vector, **kwargs):
+    scaled_images = concat_vector[:, :-6]
+    type_vector = concat_vector[:, -6:]
+
+    batch = tf.shape(scaled_images)[0]
+    scaled_images = tf.reshape(scaled_images, [batch, 64, 64, 4])
+
+    activ = tf.nn.relu
+    layer_1 = activ(conv(scaled_images, 'c1', n_filters=32, filter_size=8, stride=4, init_scale=np.sqrt(2), **kwargs))
+    layer_2 = activ(conv(layer_1, 'c2', n_filters=64, filter_size=4, stride=2, init_scale=np.sqrt(2), **kwargs))
+    layer_3 = activ(conv(layer_2, 'c3', n_filters=64, filter_size=3, stride=1, init_scale=np.sqrt(2), **kwargs))
+    layer_3 = conv_to_fc(layer_3)
+    layer_4 = linear(type_vector, 'fc0', n_hidden=64, init_scale=np.sqrt(2))
+    layer_5 = tf.concat(axis=1, values=[layer_3, layer_4])
+
+    return activ(linear(layer_5, 'fc1', n_hidden=512, init_scale=np.sqrt(2)))
+
+
 def nature_cnn(scaled_images, **kwargs):
     """
     CNN from Nature paper.
@@ -557,6 +575,8 @@ class FeedForwardPolicy(ActorCriticPolicy):
         with tf.variable_scope("model", reuse=reuse):
             if feature_extraction == "cnn":
                 pi_latent = vf_latent = cnn_extractor(self.processed_obs, **kwargs)
+            elif feature_extraction == "cnn_typeVector":
+                pi_latent = vf_latent = cnn_typeVector(self.processed_obs, **kwargs)
             else:
                 pi_latent, vf_latent = mlp_extractor(tf.layers.flatten(self.processed_obs), net_arch, act_fun)
 
@@ -581,6 +601,12 @@ class FeedForwardPolicy(ActorCriticPolicy):
 
     def value(self, obs, state=None, mask=None):
         return self.sess.run(self.value_flat, {self.obs_ph: obs})
+
+
+class CnnVectorPolicy(FeedForwardPolicy):
+    def __init__(self, sess, ob_space, ac_space, n_env, n_steps, n_batch, reuse=False, **_kwargs):
+        super(CnnVectorPolicy, self).__init__(sess, ob_space, ac_space, n_env, n_steps, n_batch, reuse,
+                                        feature_extraction="cnn_typeVector", **_kwargs)
 
 
 class CnnPolicy(FeedForwardPolicy):
